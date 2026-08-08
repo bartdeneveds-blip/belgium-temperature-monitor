@@ -2,16 +2,16 @@ name: Daily ECMWF temperature update
 
 on:
   schedule:
-    # Dagelijks om 07:30 UTC
-    # 08:30 Belgische wintertijd
-    # 09:30 Belgische zomertijd
+    # Dagelijks om 07:30 UTC.
+    # Dat is 08:30 Belgische wintertijd
+    # en 09:30 Belgische zomertijd.
     - cron: "30 7 * * *"
 
-  # Maakt het mogelijk om de workflow handmatig te testen
+  # Maakt handmatig testen mogelijk.
   workflow_dispatch:
 
 concurrency:
-  group: daily-ecmwf-temperature
+  group: daily-belgium-temperature-update
   cancel-in-progress: false
 
 permissions:
@@ -19,28 +19,73 @@ permissions:
 
 jobs:
   update:
+    name: Update ERA5T history and ECMWF forecast
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 240
 
     steps:
-      - name: Repository ophalen
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Python installeren
-        uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Dependencies installeren
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Historische norm controleren
-        run: test -s data/climatology_1961_1990.csv
+      - name: Check required files
+        run: |
+          test -s data/climatology_1961_1990.csv
+          test -s scripts/update_latest_era5t.py
+          test -s scripts/update_forecast.py
+          test -s scripts/validate_csv.py
 
-      - name: ECMWF-data downloaden en CSV bijwerken
+      - name: Configure Copernicus CDS API
+        env:
+          CDS_API_URL: ${{ secrets.CDS_API_URL }}
+          CDS_API_KEY: ${{ secrets.CDS_API_KEY }}
+        run: |
+          if [ -z "$CDS_API_URL" ]; then
+            echo "::error::GitHub secret CDS_API_URL is missing"
+            exit 1
+          fi
+
+          if [ -z "$CDS_API_KEY" ]; then
+            echo "::error::GitHub secret CDS_API_KEY is missing"
+            exit 1
+          fi
+
+          case "$CDS_API_URL" in
+            https://*) ;;
+            *)
+              echo "::error::CDS_API_URL must start with https://"
+              exit 1
+              ;;
+          esac
+
+          printf 'url: %s\nkey: %s\n' \
+            "$CDS_API_URL" \
+            "$CDS_API_KEY" \
+            > "$HOME/.cdsapirc"
+
+          chmod 600 "$HOME/.cdsapirc"
+
+          echo "Copernicus CDS API configured successfully"
+
+      - name: Update available ERA5T history
+        env:
+          BACKFILL_YEAR: "2026"
+          ERA5_LAG_DAYS: "5"
+          LATITUDE: "50.5279"
+          LONGITUDE: "4.5284"
+        run: python scripts/update_latest_era5t.py
+
+      - name: Download latest ECMWF forecast and update CSV
         env:
           LATITUDE: "50.5279"
           LONGITUDE: "4.5284"
@@ -48,22 +93,52 @@ jobs:
           FORECAST_DAYS: "10"
         run: python scripts/update_forecast.py
 
-      - name: CSV controleren
+      - name: Validate combined CSV
         run: python scripts/validate_csv.py
 
-      - name: Wijzigingen committen
+      - name: Show CSV summary
+        run: |
+          echo "First five lines:"
+          head -n 5 data/belgium_temperature_anomaly.csv
+
+          echo ""
+          echo "Last five lines:"
+          tail -n 5 data/belgium_temperature_anomaly.csv
+
+          echo ""
+          echo "Total number of lines:"
+          wc -l data/belgium_temperature_anomaly.csv
+
+          echo ""
+          echo "Rows by status:"
+          python - <<'PY'
+          import pandas as pd
+
+          path = "data/belgium_temperature_anomaly.csv"
+          data = pd.read_csv(path)
+
+          print(data["status"].value_counts(dropna=False).to_string())
+          print()
+          print(f"First date: {data['date'].min()}")
+          print(f"Last date:  {data['date'].max()}")
+          PY
+
+      - name: Commit updated data
         run: |
           git config user.name "climate-data-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add data/belgium_temperature_anomaly.csv
-          git add data/run_metadata.json
+
+          if [ -f data/run_metadata.json ]; then
+            git add data/run_metadata.json
+          fi
 
           if git diff --cached --quiet; then
-            echo "Geen wijzigingen gevonden"
+            echo "No data changes"
             exit 0
           fi
 
-          git commit -m "Update ECMWF temperature forecast"
+          git commit -m "Update ERA5T history and ECMWF forecast"
           git pull --rebase
           git push
