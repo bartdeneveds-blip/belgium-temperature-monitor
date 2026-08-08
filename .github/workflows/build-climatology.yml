@@ -9,8 +9,7 @@ permissions:
 jobs:
   climatology:
     runs-on: ubuntu-latest
-    timeout-minutes: 720
-``
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
@@ -30,7 +29,21 @@ jobs:
           CDS_API_URL: ${{ secrets.CDS_API_URL }}
           CDS_API_KEY: ${{ secrets.CDS_API_KEY }}
         run: |
-          printf 'url: %s\nkey: %s\n' "$CDS_API_URL" "$CDS_API_KEY" > "$HOME/.cdsapirc"
+          if [ -z "$CDS_API_URL" ]; then
+            echo "::error::CDS_API_URL is missing"
+            exit 1
+          fi
+
+          if [ -z "$CDS_API_KEY" ]; then
+            echo "::error::CDS_API_KEY is missing"
+            exit 1
+          fi
+
+          printf 'url: %s\nkey: %s\n' \
+            "$CDS_API_URL" \
+            "$CDS_API_KEY" \
+            > "$HOME/.cdsapirc"
+
           chmod 600 "$HOME/.cdsapirc"
 
       - name: Download ERA5 and build climatology
@@ -52,4 +65,5 @@ jobs:
           fi
 
           git commit -m "Build ERA5 climatology 1961-1990"
+          git pull --rebase
           git push
