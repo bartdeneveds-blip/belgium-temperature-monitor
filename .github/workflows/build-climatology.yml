@@ -162,4 +162,3 @@ jobs:
           git commit -m "Build ERA5 climatology 1961-1990"
           git pull --rebase
           git push
-`
