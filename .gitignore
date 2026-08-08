@@ -1,0 +1,5 @@
+data/*.grib2
+data/*.idx
+data/era5_1961_1990_point.nc
+__pycache__/
+*.pyc
