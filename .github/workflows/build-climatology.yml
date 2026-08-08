@@ -7,9 +7,46 @@ permissions:
   contents: write
 
 jobs:
-  climatology:
+  download:
+    name: Download ERA5 for ${{ matrix.year }}
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        year:
+          - 1961
+          - 1962
+          - 1963
+          - 1964
+          - 1965
+          - 1966
+          - 1967
+          - 1968
+          - 1969
+          - 1970
+          - 1971
+          - 1972
+          - 1973
+          - 1974
+          - 1975
+          - 1976
+          - 1977
+          - 1978
+          - 1979
+          - 1980
+          - 1981
+          - 1982
+          - 1983
+          - 1984
+          - 1985
+          - 1986
+          - 1987
+          - 1988
+          - 1989
+          - 1990
 
     steps:
       - name: Checkout repository
@@ -46,11 +83,69 @@ jobs:
 
           chmod 600 "$HOME/.cdsapirc"
 
-      - name: Download ERA5 and build climatology
+      - name: Download and process ERA5 year
         env:
+          YEAR: ${{ matrix.year }}
           LATITUDE: "50.5279"
           LONGITUDE: "4.5284"
-        run: python scripts/build_climatology.py
+        run: python scripts/download_era5_year.py
+
+      - name: Check yearly CSV
+        run: |
+          test -s "data/yearly/era5_daily_${{ matrix.year }}.csv"
+          head -n 3 "data/yearly/era5_daily_${{ matrix.year }}.csv"
+
+      - name: Upload yearly result
+        uses: actions/upload-artifact@v4
+        with:
+          name: era5-${{ matrix.year }}
+          path: data/yearly/era5_daily_${{ matrix.year }}.csv
+          if-no-files-found: error
+          retention-days: 7
+
+  merge:
+    name: Merge ERA5 years and build climatology
+    needs: download
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download all yearly results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: era5-*
+          path: data/yearly
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: |
+          find data/yearly -maxdepth 1 -type f -name '*.csv' -print
+          echo "Number of yearly files:"
+          find data/yearly -maxdepth 1 -type f -name '*.csv' | wc -l
+
+      - name: Merge years and build climatology
+        run: python scripts/merge_era5_years.py
+
+      - name: Validate climatology output
+        run: |
+          test -s data/climatology_1961_1990.csv
+          head -n 5 data/climatology_1961_1990.csv
+          echo "Number of lines:"
+          wc -l data/climatology_1961_1990.csv
 
       - name: Commit climatology
         run: |
@@ -67,3 +162,4 @@ jobs:
           git commit -m "Build ERA5 climatology 1961-1990"
           git pull --rebase
           git push
+`
