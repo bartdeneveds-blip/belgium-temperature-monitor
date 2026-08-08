@@ -7,7 +7,6 @@ on:
     # en 09:30 Belgische zomertijd.
     - cron: "30 7 * * *"
 
-  # Maakt handmatig testen mogelijk.
   workflow_dispatch:
 
 concurrency:
@@ -19,9 +18,9 @@ permissions:
 
 jobs:
   update:
-    name: Update ERA5T history and ECMWF forecast
+    name: Update ECMWF forecast and ERA5T history
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -51,22 +50,14 @@ jobs:
           CDS_API_KEY: ${{ secrets.CDS_API_KEY }}
         run: |
           if [ -z "$CDS_API_URL" ]; then
-            echo "::error::GitHub secret CDS_API_URL is missing"
+            echo "::error::CDS_API_URL is missing"
             exit 1
           fi
 
           if [ -z "$CDS_API_KEY" ]; then
-            echo "::error::GitHub secret CDS_API_KEY is missing"
+            echo "::error::CDS_API_KEY is missing"
             exit 1
           fi
-
-          case "$CDS_API_URL" in
-            https://*) ;;
-            *)
-              echo "::error::CDS_API_URL must start with https://"
-              exit 1
-              ;;
-          esac
 
           printf 'url: %s\nkey: %s\n' \
             "$CDS_API_URL" \
@@ -75,17 +66,7 @@ jobs:
 
           chmod 600 "$HOME/.cdsapirc"
 
-          echo "Copernicus CDS API configured successfully"
-
-      - name: Update available ERA5T history
-        env:
-          BACKFILL_YEAR: "2026"
-          ERA5_LAG_DAYS: "5"
-          LATITUDE: "50.5279"
-          LONGITUDE: "4.5284"
-        run: python scripts/update_latest_era5t.py
-
-      - name: Download latest ECMWF forecast and update CSV
+      - name: Download latest ECMWF forecast
         env:
           LATITUDE: "50.5279"
           LONGITUDE: "4.5284"
@@ -93,34 +74,115 @@ jobs:
           FORECAST_DAYS: "10"
         run: python scripts/update_forecast.py
 
+      - name: Update missing ERA5T days
+        env:
+          BACKFILL_YEAR: "2026"
+          ERA5_LAG_DAYS: "5"
+          LATITUDE: "50.5279"
+          LONGITUDE: "4.5284"
+        run: python scripts/update_latest_era5t.py
+
       - name: Validate combined CSV
         run: python scripts/validate_csv.py
 
-      - name: Show CSV summary
+      - name: Validate ERA5T-only CSV
         run: |
-          echo "First five lines:"
-          head -n 5 data/belgium_temperature_anomaly.csv
+          test -s data/belgium_temperature_anomaly_era5t.csv
 
-          echo ""
-          echo "Last five lines:"
-          tail -n 5 data/belgium_temperature_anomaly.csv
-
-          echo ""
-          echo "Total number of lines:"
-          wc -l data/belgium_temperature_anomaly.csv
-
-          echo ""
-          echo "Rows by status:"
           python - <<'PY'
           import pandas as pd
 
-          path = "data/belgium_temperature_anomaly.csv"
+          path = "data/belgium_temperature_anomaly_era5t.csv"
           data = pd.read_csv(path)
 
-          print(data["status"].value_counts(dropna=False).to_string())
+          required = {
+              "date",
+              "forecast_max_c",
+              "historic_norm_c",
+              "anomaly_c",
+              "status",
+              "latitude",
+              "longitude",
+          }
+
+          missing = required - set(data.columns)
+
+          if missing:
+              raise RuntimeError(
+                  f"Missing columns: {sorted(missing)}"
+              )
+
+          if data.empty:
+              raise RuntimeError(
+                  "ERA5T-only CSV is empty"
+              )
+
+          if not data["status"].eq("era5t").all():
+              raise RuntimeError(
+                  "ERA5T-only CSV contains forecast rows"
+              )
+
+          dates = pd.to_datetime(
+              data["date"],
+              errors="raise",
+          )
+
+          if dates.duplicated().any():
+              raise RuntimeError(
+                  "ERA5T-only CSV contains duplicate dates"
+              )
+
+          expected = (
+              data["forecast_max_c"]
+              - data["historic_norm_c"]
+          ).round(2)
+
+          actual = data["anomaly_c"].round(2)
+
+          if not expected.equals(actual):
+              raise RuntimeError(
+                  "Anomaly calculation mismatch"
+              )
+
+          print(f"Validated {len(data)} ERA5T rows")
+          print(f"First date: {dates.min().date()}")
+          print(f"Last date:  {dates.max().date()}")
+          PY
+
+      - name: Show data summary
+        run: |
+          echo "Combined CSV status counts:"
+
+          python - <<'PY'
+          import pandas as pd
+
+          combined = pd.read_csv(
+              "data/belgium_temperature_anomaly.csv"
+          )
+
+          era5t = pd.read_csv(
+              "data/belgium_temperature_anomaly_era5t.csv"
+          )
+
+          print(
+              combined["status"]
+              .value_counts(dropna=False)
+              .to_string()
+          )
+
           print()
-          print(f"First date: {data['date'].min()}")
-          print(f"Last date:  {data['date'].max()}")
+          print(
+              f"Combined rows: {len(combined)}"
+          )
+          print(
+              f"ERA5T-only rows: {len(era5t)}"
+          )
+          print(
+              f"ERA5T first date: {era5t['date'].min()}"
+          )
+          print(
+              f"ERA5T last date: {era5t['date'].max()}"
+          )
           PY
 
       - name: Commit updated data
@@ -129,6 +191,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add data/belgium_temperature_anomaly.csv
+          git add data/belgium_temperature_anomaly_era5t.csv
 
           if [ -f data/run_metadata.json ]; then
             git add data/run_metadata.json
