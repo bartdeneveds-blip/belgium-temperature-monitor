@@ -9,7 +9,8 @@ permissions:
 jobs:
   climatology:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 720
+``
 
     steps:
       - name: Checkout repository
