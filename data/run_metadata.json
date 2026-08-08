@@ -1,0 +1,7 @@
+{
+  "updated_at_utc": "2026-08-08T19:13:42.866572+00:00",
+  "latitude": 50.5279,
+  "longitude": 4.5284,
+  "timezone": "Europe/Brussels",
+  "method": "Daily max from available 3/6-hourly IFS 2t forecast samples; anomaly versus smoothed ERA5 1961-1990 norm"
+}
