@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import cdsapi
@@ -26,8 +27,115 @@ AREA = [
     LON + 0.15,  # oost
 ]
 
+def download_year(
+    client: cdsapi.Client,
+    year: int,
+    max_attempts: int = 5,
+) -> Path:
+    """
+    Download één jaar ERA5-uurgegevens.
 
-def download_year(client: cdsapi.Client, year: int) -> Path:
+    Bij een tijdelijke fout aan de Copernicus-kant wordt
+    de aanvraag maximaal vijf keer opnieuw geprobeerd.
+    """
+
+    target = CACHE_DIR / f"era5_{year}.nc"
+
+    if target.exists() and target.stat().st_size > 0:
+        print(
+            f"{year}: bestaand bestand wordt hergebruikt",
+            flush=True,
+        )
+        return target
+
+    request = {
+        "product_type": ["reanalysis"],
+        "variable": ["2m_temperature"],
+        "year": [str(year)],
+        "month": [
+            f"{month:02d}"
+            for month in range(1, 13)
+        ],
+        "day": [
+            f"{day:02d}"
+            for day in range(1, 32)
+        ],
+        "time": [
+            f"{hour:02d}:00"
+            for hour in range(24)
+        ],
+        "area": AREA,
+        "data_format": "netcdf",
+        "download_format": "unarchived",
+    }
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(
+                f"{year}: ERA5-aanvraag wordt ingediend "
+                f"(poging {attempt}/{max_attempts})",
+                flush=True,
+            )
+
+            # Verwijder een mogelijk onvolledig bestand
+            # van een eerdere mislukte poging.
+            target.unlink(missing_ok=True)
+
+            client.retrieve(
+                "reanalysis-era5-single-levels",
+                request,
+                str(target),
+            )
+
+            if not target.exists():
+                raise RuntimeError(
+                    f"Download voor {year} heeft geen bestand opgeleverd"
+                )
+
+            if target.stat().st_size == 0:
+                raise RuntimeError(
+                    f"Download voor {year} heeft een leeg bestand opgeleverd"
+                )
+
+            print(
+                f"{year}: download voltooid "
+                f"({target.stat().st_size / 1_000_000:.1f} MB)",
+                flush=True,
+            )
+
+            return target
+
+        except Exception as error:
+            target.unlink(missing_ok=True)
+
+            print(
+                f"{year}: poging {attempt} mislukt: "
+                f"{type(error).__name__}: {error}",
+                flush=True,
+            )
+
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"Download voor {year} is na "
+                    f"{max_attempts} pogingen mislukt"
+                ) from error
+
+            # Progressief langer wachten:
+            # 60, 120, 180 en 240 seconden.
+            wait_seconds = 60 * attempt
+
+            print(
+                f"{year}: nieuwe poging over "
+                f"{wait_seconds} seconden",
+                flush=True,
+            )
+
+            time.sleep(wait_seconds)
+
+    raise RuntimeError(
+        f"Onverwacht einde van downloadfunctie voor {year}"
+    )
+
     """
     Download één jaar ERA5-uurgegevens.
     """
