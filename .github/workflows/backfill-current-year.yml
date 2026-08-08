@@ -1,0 +1,82 @@
+name: Backfill current year with ERA5T
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure CDS API
+        env:
+          CDS_API_URL: ${{ secrets.CDS_API_URL }}
+          CDS_API_KEY: ${{ secrets.CDS_API_KEY }}
+        run: |
+          if [ -z "$CDS_API_URL" ]; then
+            echo "CDS_API_URL is missing"
+            exit 1
+          fi
+
+          if [ -z "$CDS_API_KEY" ]; then
+            echo "CDS_API_KEY is missing"
+            exit 1
+          fi
+
+          printf 'url: %s\nkey: %s\n' \
+            "$CDS_API_URL" \
+            "$CDS_API_KEY" \
+            > "$HOME/.cdsapirc"
+
+          chmod 600 "$HOME/.cdsapirc"
+
+      - name: Backfill current year
+        env:
+          BACKFILL_YEAR: "2026"
+          ERA5_LAG_DAYS: "5"
+          LATITUDE: "50.5279"
+          LONGITUDE: "4.5284"
+        run: python scripts/backfill_current_year.py
+
+      - name: Validate CSV
+        run: python scripts/validate_csv.py
+
+      - name: Show data summary
+        run: |
+          head -n 5 data/belgium_temperature_anomaly.csv
+          tail -n 5 data/belgium_temperature_anomaly.csv
+          wc -l data/belgium_temperature_anomaly.csv
+
+      - name: Commit backfilled data
+        run: |
+          git config user.name "climate-data-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/belgium_temperature_anomaly.csv
+
+          if git diff --cached --quiet; then
+            echo "No backfill changes"
+            exit 0
+          fi
+
+          git commit -m "Backfill 2026 temperature anomalies with ERA5T"
+          git pull --rebase
+          git push
